@@ -16,6 +16,10 @@ const err = (code, msg, extra = {}) =>
 const siteID = (process.env.NETLIFY_SITE_ID || '').trim()
 const token  = (process.env.NETLIFY_API_TOKEN || '').trim()
 
+// configurable cooldown (seconds) for updates; default 60s
+const COOLDOWN_S  = Math.max(0, Number(process.env.VOTE_COOLDOWN_S ?? '60') || 60)
+const COOLDOWN_MS = COOLDOWN_S * 1000
+
 function tryGetStoreAllWays () {
   if (!siteID || !token) throw new Error('Missing NETLIFY_SITE_ID or NETLIFY_API_TOKEN')
   const attempts = [
@@ -38,17 +42,19 @@ const getHeader = (headers, name) => headers?.[name] || headers?.[name.toLowerCa
 const codeKey   = (code) => `codes/${code}.json`
 const legacyKey = (degree, code) => `courses/${degree}/${code}.json`
 
-// Ensure we always have the shape we want
+// Ensure we always have the shape we want (BACKWARD-COMPATIBLE)
 function normalizeDoc(doc) {
-  // new format: { sum, count, votes: { voterKey: score }, updatedAt }
+  // new format: { sum, count, votes: { voterKey: score }, stamps: { voterKey: ts }, updatedAt }
   if (doc && typeof doc === 'object') {
     const hasVotes = doc.votes && typeof doc.votes === 'object'
     const sum = Number(doc.sum) || 0
     const count = Number(doc.count) || 0
-    return hasVotes ? { sum, count, votes: doc.votes, updatedAt: doc.updatedAt || Date.now() }
-                    : { sum, count, votes: {}, updatedAt: Date.now() } // migrate aggregate-only
+    const stamps = (doc.stamps && typeof doc.stamps === 'object') ? doc.stamps : {}
+    return hasVotes
+      ? { sum, count, votes: doc.votes, stamps, updatedAt: doc.updatedAt || Date.now() }
+      : { sum, count, votes: {}, stamps, updatedAt: Date.now() } // migrate aggregate-only
   }
-  return { sum: 0, count: 0, votes: {}, updatedAt: Date.now() }
+  return { sum: 0, count: 0, votes: {}, stamps: {}, updatedAt: Date.now() }
 }
 
 // build a stable voter key (prefer clientId from body; else IP+UA)
@@ -72,7 +78,8 @@ export async function handler(event) {
       node: process.version,
       have_site_id: !!siteID,
       have_api_token: !!token,
-      method: event.httpMethod
+      method: event.httpMethod,
+      cooldown_s: COOLDOWN_S
     })
   }
 
@@ -145,8 +152,26 @@ export async function handler(event) {
       const newScore = Math.max(0, Math.min(100, score))
       const voterKey = voterKeyFrom(event, body)
 
+      // enforce cooldown
+      const now   = Date.now()
+      const last  = Number(doc.stamps[voterKey] || 0)
+      if (last && (now - last) < COOLDOWN_MS) {
+        const retry = Math.ceil((COOLDOWN_MS - (now - last)) / 1000)
+        const safeAvg = doc.count ? Math.round((doc.sum / doc.count) * 10) / 10 : null
+        return err(429, 'Please wait before updating your vote', {
+          retry_after_s: retry,
+          avg: safeAvg,
+          count: doc.count
+        })
+      }
+
       const prev = doc.votes[voterKey]
       if (typeof prev === 'number') {
+        if (prev === newScore) {
+          // no-op — don't burn cooldown for identical score
+          const avg = doc.count ? Math.round((doc.sum / doc.count) * 10) / 10 : null
+          return ok({ ok: true, avg, count: doc.count })
+        }
         // update existing: adjust sum by delta, count unchanged
         const delta = newScore - prev
         doc.sum += delta
@@ -158,11 +183,14 @@ export async function handler(event) {
         doc.votes[voterKey] = newScore
       }
 
+      // record/update the voter cooldown stamp
+      doc.stamps[voterKey] = now
+
       doc.updatedAt = Date.now()
       await store.setJSON(k, doc)
 
       const avg = Math.round((doc.sum / doc.count) * 10) / 10
-      return ok({ ok: true, avg, count: doc.count })
+      return ok({ ok: true, avg, count: doc.count, cooldown_s: COOLDOWN_S })
     } catch (e) {
       return err(500, 'Write failed', { reason: String(e) })
     }
