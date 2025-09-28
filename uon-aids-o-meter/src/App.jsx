@@ -5,6 +5,24 @@ import { DEGREES, prefixesForDegree } from './data/degrees.js'
 
 const FN_URL = '/.netlify/functions/votes'
 
+// stable per-browser id to prevent double-count from "Update vote"
+function getClientId() {
+  try {
+    let id = localStorage.getItem('client:id')
+    if (!id) {
+      id =
+        (window?.crypto?.randomUUID?.() ||
+         (Math.random().toString(36).slice(2) + Date.now().toString(36)))
+      localStorage.setItem('client:id', id)
+    }
+    return id
+  } catch {
+    // fallback if storage not available
+    return Math.random().toString(36).slice(2) + Date.now().toString(36)
+  }
+}
+const CLIENT_ID = getClientId()
+
 export default function App(){
   // Always show disclaimer on fresh load (no persistence)
   const [accepted, setAccepted] = useState(false)
@@ -30,13 +48,14 @@ export default function App(){
   useEffect(() => {
     let ignore = false
     async function fetchAvg() {
-      if (!degree || !selected?.code) return
+      if (!selected?.code) return
       setLoading(true); setMsg(null)
       try {
         const res = await fetch(FN_URL, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ degree, code: selected.code }) // POST read
+          // server reads by code; degree included only for one-time legacy merge
+          body: JSON.stringify({ degree, code: selected.code })
         })
         const data = await res.json()
         if (!ignore) {
@@ -65,20 +84,26 @@ export default function App(){
       '<h2>Access declined</h2><p>Totally fair. You can close this tab any time.</p></div></div>'
   }
 
+  // one vote per course code per device (local UI hint only; server enforces with clientId)
   const votedKey = useMemo(
-    () => (degree && selected?.code ? `voted:${degree}:${selected.code}` : null),
-    [degree, selected]
+    () => (selected?.code ? `voted:${selected.code}` : null),
+    [selected]
   )
   const alreadyVoted = votedKey ? !!localStorage.getItem(votedKey) : false
 
   async function submitVote() {
-    if (!degree || !selected?.code) return
+    if (!selected?.code) return
     setLoading(true); setMsg(null)
     try {
       const res = await fetch(FN_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ degree, code: selected.code, score: Number(vote) })
+        body: JSON.stringify({
+          degree,                 // optional; legacy merge only
+          code: selected.code,    // single source of truth
+          score: Number(vote),
+          clientId: CLIENT_ID     // prevents “update” from adding extra count
+        })
       })
       const data = await res.json()
       if (!res.ok) {
@@ -87,7 +112,7 @@ export default function App(){
         setAvg(data.avg)
         setCount(data.count)
         if (votedKey) localStorage.setItem(votedKey, String(Date.now()))
-        setMsg('Thanks for voting!')
+        setMsg(alreadyVoted ? 'Updated your vote!' : 'Thanks for voting!')
       }
     } catch (e) {
       setMsg('Vote failed.')
@@ -153,7 +178,7 @@ export default function App(){
             {selected && (
               <>
                 <div className="meta">
-                  <div className="tag">{degree}</div>
+                  <div className="tag">{degree || 'Course'}</div>
                   <div className="tag">{selected.code}</div>
                   <span style={{ flex: 1 }} />
                   <small>{count} vote{count === 1 ? '' : 's'}</small>
@@ -182,7 +207,7 @@ export default function App(){
                       </button>
                       <button className="btn secondary" onClick={() => setVote(50)} disabled={loading}>Reset</button>
                     </div>
-                    <small className="muted">Anti-spam: one vote per course per device + IP window.</small>
+                    <small className="muted">One vote per course per device (updates allowed).</small>
                     {msg && <small style={{ color: '#c7f' }}>{msg}</small>}
                   </div>
                 </div>
