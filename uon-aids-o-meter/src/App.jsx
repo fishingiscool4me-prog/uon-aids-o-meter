@@ -151,7 +151,7 @@ export default function App(){
 
         <div className="right">
           <div className="panel card">
-            <h3 style={{marginTop:0}}>Aids‑O‑Score</h3>
+            <h3 style={{marginTop:0}}>Aids‑O‑Meter</h3>
             {!selected && <p>Pick a course to see the fun little meter. 🎯</p>}
             {selected && (
               <>
