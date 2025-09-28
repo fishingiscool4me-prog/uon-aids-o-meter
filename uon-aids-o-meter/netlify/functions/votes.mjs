@@ -1,3 +1,4 @@
+// netlify/functions/votes.mjs
 import { getStore } from '@netlify/blobs'
 
 const CORS = {
@@ -10,42 +11,28 @@ const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(da
 const err = (code, msg, extra = {}) =>
   ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
 
-// Try auto wiring; if not available, fall back to manual siteID+token
-function getVotesStore() {
-  try {
-    // auto (works when Blobs is enabled for the site)
-    return getStore('votes')
-  } catch (e) {
-    const siteID = process.env.NETLIFY_SITE_ID
-    const token  = process.env.NETLIFY_API_TOKEN
-    if (!siteID || !token) {
-      throw new Error(`Blobs auto-wiring missing and manual env not set (siteID or token not found). Original: ${e}`)
-    }
-    // manual mode
-    return getStore('votes', { siteID, token })
-  }
-}
+const siteID = process.env.NETLIFY_SITE_ID
+const token  = process.env.NETLIFY_API_TOKEN
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
-  // quick diagnostics
+  // quick diag
   if (event.queryStringParameters?.diag === '1') {
     return ok({
       node: process.version,
-      auto_ctx: !!process.env.NETLIFY_BLOBS_CONTEXT,
-      auto_url: !!process.env.NETLIFY_BLOBS_URL,
-      have_site_id: !!process.env.NETLIFY_SITE_ID,
-      have_api_token: !!process.env.NETLIFY_API_TOKEN
+      mode: 'manual',
+      have_site_id: !!siteID,
+      have_api_token: !!token
     })
   }
 
-  let store
-  try {
-    store = getVotesStore()
-  } catch (e) {
-    return err(500, 'Blobs unavailable', { reason: String(e) })
+  if (!siteID || !token) {
+    return err(500, 'Missing NETLIFY_SITE_ID or NETLIFY_API_TOKEN')
   }
+
+  // ALWAYS manual
+  const store = getStore('votes', { siteID, token })
 
   if (event.httpMethod === 'GET') {
     const degree = event.queryStringParameters?.degree
