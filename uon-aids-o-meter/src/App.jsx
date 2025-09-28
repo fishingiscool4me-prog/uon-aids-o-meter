@@ -57,12 +57,16 @@ export default function App(){
           // server reads by code; degree included only for one-time legacy merge
           body: JSON.stringify({ degree, code: selected.code })
         })
-        const data = await res.json()
+        const data = await res.json().catch(() => ({}))
         if (!ignore) {
-          setAvg(data.avg)
-          setCount(data.count || 0)
+          if (!res.ok) {
+            setMsg(data?.error || 'Could not load score.')
+          } else {
+            setAvg(data.avg)
+            setCount(data.count || 0)
+          }
         }
-      } catch (e) {
+      } catch {
         if (!ignore) setMsg('Could not load score.')
       } finally {
         if (!ignore) setLoading(false)
@@ -93,6 +97,7 @@ export default function App(){
 
   async function submitVote() {
     if (!selected?.code) return
+    const wasVoted = alreadyVoted // capture before we potentially set it
     setLoading(true); setMsg(null)
     try {
       const res = await fetch(FN_URL, {
@@ -105,16 +110,16 @@ export default function App(){
           clientId: CLIENT_ID     // prevents “update” from adding extra count
         })
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         setMsg(data?.error || 'Vote failed.')
       } else {
         setAvg(data.avg)
         setCount(data.count)
         if (votedKey) localStorage.setItem(votedKey, String(Date.now()))
-        setMsg(alreadyVoted ? 'Updated your vote!' : 'Thanks for voting!')
+        setMsg(wasVoted ? 'Updated your vote!' : 'Thanks for voting!')
       }
-    } catch (e) {
+    } catch {
       setMsg('Vote failed.')
     } finally {
       setLoading(false)
