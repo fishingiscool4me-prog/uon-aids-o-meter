@@ -6,7 +6,9 @@ import { DEGREES, prefixesForDegree } from './data/degrees.js'
 const FN_URL = '/.netlify/functions/votes'
 
 export default function App(){
-  const [accepted, setAccepted] = useState(() => localStorage.getItem('terms:v1') === 'ok')
+  // Always show disclaimer on fresh load (no persistence)
+  const [accepted, setAccepted] = useState(false)
+
   const [degree, setDegree] = useState(null)
   const [prefix, setPrefix] = useState(null)
   const [selected, setSelected] = useState(null)
@@ -51,12 +53,11 @@ export default function App(){
     return () => { ignore = true }
   }, [degree, selected])
 
+  // Disclaimer actions (no persistence so it shows every new visit)
   function accept() {
-    localStorage.setItem('terms:v1', 'ok')
     setAccepted(true)
   }
   function decline() {
-    localStorage.removeItem('terms:v1')
     setAccepted(false)
     document.body.innerHTML =
       '<div style="display:grid;place-items:center;height:100vh;color:white;font-family:Inter,sans-serif;">' +
