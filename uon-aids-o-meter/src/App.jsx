@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useMemo, useState, useEffect } from 'react'
 import Gauge from './components/Gauge.jsx'
 import DisclaimerModal from './components/DisclaimerModal.jsx'
@@ -42,7 +43,7 @@ export default function App(){
     return degreeList.filter(c => c.code.startsWith(prefix))
   }, [degree, prefix, degreeList])
 
-  // ✅ Fetch current avg when selection changes (GET only)
+  // Fetch current avg when selection changes (GET read; server now auto-inits blobs)
   useEffect(() => {
     let ignore = false
     async function fetchAvg() {
@@ -79,6 +80,7 @@ export default function App(){
       '<h2>Access declined</h2><p>Totally fair. You can close this tab any time.</p></div></div>'
   }
 
+  // UI hint only; server enforces per-clientId
   const votedKey = useMemo(
     () => (selected?.code ? `voted:${selected.code}` : null),
     [selected]
@@ -168,23 +170,47 @@ export default function App(){
         <div className="right">
           <div className="panel card">
             <h3 style={{ marginTop: 0 }}>Aids-O-Meter</h3>
+
             {!selected && <p>Pick a course to see the fun little meter. 🎯</p>}
+
             {selected && (
               <>
-                <div className="meta">
-                  <div className="tag">{degree || 'Course'}</div>
-                  <div className="tag">{selected.code}</div>
-                  <span style={{ flex: 1 }} />
-                  <small>{count} vote{count === 1 ? '' : 's'}</small>
+                {/* ===== Enhanced header next to the gauge ===== */}
+                <div
+                  className="meta"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gap: 2,
+                    marginBottom: 10
+                  }}
+                >
+                  {/* Degree name big & bold */}
+                  <div style={{ fontWeight: 800, fontSize: 22, lineHeight: 1.15 }}>
+                    {degree || 'Course'}
+                  </div>
+
+                  {/* Course code + description, bold and readable */}
+                  <div style={{ fontWeight: 700, fontSize: 18, lineHeight: 1.2 }}>
+                    {selected.code} — {selected.name}
+                  </div>
+
+                  {/* Votes, muted */}
+                  <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+                    {count} vote{count === 1 ? '' : 's'}
+                  </div>
                 </div>
 
                 <Gauge value={avg ?? 0} />
                 {loading && <small style={{ color: 'var(--muted)' }}>Loading…</small>}
                 {avg === null && <p>No score yet. Be the first to vote!</p>}
 
-                <div className="card" style={{ padding: 12 }}>
+                <div className="card" style={{ padding: 12, marginTop: 10 }}>
                   <div style={{ display: 'grid', gap: 8 }}>
-                    <label htmlFor="vote"><b>Your vote: {vote}</b> (0 best → 100 worst)</label>
+                    <label htmlFor="vote">
+                      <b>Your vote: {vote}</b> <span className="muted">(0 best → 100 worst)</span>
+                    </label>
                     <input
                       id="vote"
                       className="slider"
@@ -195,11 +221,13 @@ export default function App(){
                       value={vote}
                       onChange={e => setVote(Number(e.target.value))}
                     />
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <button className="btn" onClick={submitVote} disabled={loading}>
                         {alreadyVoted ? 'Update vote' : 'Submit vote'}
                       </button>
-                      <button className="btn secondary" onClick={() => setVote(50)} disabled={loading}>Reset</button>
+                      <button className="btn secondary" onClick={() => setVote(50)} disabled={loading}>
+                        Reset
+                      </button>
                     </div>
                     <small className="muted">One vote per course per device (updates allowed).</small>
                     {msg && <small style={{ color: '#c7f' }}>{msg}</small>}
