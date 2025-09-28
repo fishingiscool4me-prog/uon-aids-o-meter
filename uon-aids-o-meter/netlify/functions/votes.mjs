@@ -1,4 +1,3 @@
-// netlify/functions/votes.mjs
 import { getStore } from '@netlify/blobs'
 
 const CORS = {
@@ -11,23 +10,41 @@ const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(da
 const err = (code, msg, extra = {}) =>
   ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
 
+// Try auto wiring; if not available, fall back to manual siteID+token
+function getVotesStore() {
+  try {
+    // auto (works when Blobs is enabled for the site)
+    return getStore('votes')
+  } catch (e) {
+    const siteID = process.env.NETLIFY_SITE_ID
+    const token  = process.env.NETLIFY_API_TOKEN
+    if (!siteID || !token) {
+      throw new Error(`Blobs auto-wiring missing and manual env not set (siteID or token not found). Original: ${e}`)
+    }
+    // manual mode
+    return getStore('votes', { siteID, token })
+  }
+}
+
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
-  // Diagnostics
+  // quick diagnostics
   if (event.queryStringParameters?.diag === '1') {
     return ok({
       node: process.version,
-      has_NETLIFY_BLOBS_CONTEXT: !!process.env.NETLIFY_BLOBS_CONTEXT,
-      has_NETLIFY_BLOBS_URL: !!process.env.NETLIFY_BLOBS_URL
+      auto_ctx: !!process.env.NETLIFY_BLOBS_CONTEXT,
+      auto_url: !!process.env.NETLIFY_BLOBS_URL,
+      have_site_id: !!process.env.NETLIFY_SITE_ID,
+      have_api_token: !!process.env.NETLIFY_API_TOKEN
     })
   }
 
   let store
   try {
-    store = getStore('votes') // auto-wired by Netlify
+    store = getVotesStore()
   } catch (e) {
-    return err(500, 'Blobs not available (getStore failed)', { reason: String(e) })
+    return err(500, 'Blobs unavailable', { reason: String(e) })
   }
 
   if (event.httpMethod === 'GET') {
@@ -37,7 +54,7 @@ export async function handler(event) {
 
     const key = `courses/${degree}/${code}.json`
     try {
-      const data = await store.get(key, { type: 'json' })
+      const data = await store.get(key, { type: 'json' }) // null if not found
       if (!data) return ok({ avg: null, count: 0 })
       const avg = Math.round((data.sum / Math.max(1, data.count)) * 10) / 10
       return ok({ avg, count: data.count })
