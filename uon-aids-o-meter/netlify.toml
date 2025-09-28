@@ -7,7 +7,6 @@
   node_bundler = "esbuild"
   external_node_modules = ["@netlify/blobs"]
 
-# (Optional) Force SPA-style routing so deep links work
 [[redirects]]
   from = "/*"
   to = "/index.html"
