@@ -195,3 +195,21 @@ body{
 }
 .modal h3{ margin-top:0; }
 .modal small{ color: var(--muted); }
+
+/* meter text clean-up */
+.kpi .big { font-size: 44px; line-height: 1; }
+.kpi .tag { padding: 4px 10px; border-radius: 999px; }
+
+.legend {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.25;
+  margin-top: 4px;
+}
+
+.mood { font-size: 22px; }
+
+.scale { right: -58px; }  /* nudge tick labels so they don't crowd */
+@media (max-width: 520px){
+  .scale { right: -50px; }
+}
