@@ -1,7 +1,5 @@
-// netlify/functions/votes.mjs
 import { getStore } from '@netlify/blobs'
 
-// CORS + helpers
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,OPTIONS',
@@ -12,19 +10,36 @@ const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(da
 const err = (code, msg, extra = {}) =>
   ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
 
-// ALWAYS manual mode (your site doesn't auto-wire Blobs)
-const siteID = process.env.NETLIFY_SITE_ID
-const token  = process.env.NETLIFY_API_TOKEN
+const siteID = (process.env.NETLIFY_SITE_ID || '').trim()
+const token  = (process.env.NETLIFY_API_TOKEN || '').trim()
 
-function getVotesStore() {
-  if (!siteID || !token) throw new Error('Missing NETLIFY_SITE_ID or NETLIFY_API_TOKEN')
-  return getStore('votes', { siteID, token })
+function tryGetStoreAllWays() {
+  if (!siteID || !token) {
+    throw new Error('Missing NETLIFY_SITE_ID or NETLIFY_API_TOKEN')
+  }
+
+  const attempts = [
+    { label: "name+{siteID,token}", fn: () => getStore('votes', { siteID, token }) },
+    { label: "name+{siteId,token}", fn: () => getStore('votes', { siteId: siteID, token }) },
+    { label: "{name,siteID,token}", fn: () => getStore({ name: 'votes', siteID, token }) },
+    { label: "{name,siteId,token}", fn: () => getStore({ name: 'votes', siteId: siteID, token }) },
+  ]
+
+  const errors = []
+  for (const a of attempts) {
+    try {
+      const store = a.fn()
+      return { store, variant: a.label }
+    } catch (e) {
+      errors.push(`${a.label}: ${String(e)}`)
+    }
+  }
+  throw new Error(`Blobs init failed → ${errors.join(' | ')}`)
 }
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
-  // Diagnostics
   if (event.queryStringParameters?.diag === '1') {
     return ok({
       node: process.version,
@@ -36,14 +51,16 @@ export async function handler(event) {
     })
   }
 
-  let store
+  let store, variant
   try {
-    store = getVotesStore()
+    const got = tryGetStoreAllWays()
+    store = got.store
+    variant = got.variant
   } catch (e) {
     return err(500, 'Netlify Blobs unavailable', { reason: String(e) })
   }
 
-  // ---- READ via GET (degree/code in query) ----
+  // GET: read (degree/code in query)
   if (event.httpMethod === 'GET') {
     const degree = event.queryStringParameters?.degree
     const code   = event.queryStringParameters?.code
@@ -52,21 +69,21 @@ export async function handler(event) {
     const key = `courses/${degree}/${code}.json`
     try {
       const data = await store.get(key, { type: 'json' }) // null if not found
-      if (!data) return ok({ avg: null, count: 0 })
+      if (!data) return ok({ avg: null, count: 0, variant })
       const avg = Math.round((data.sum / Math.max(1, data.count)) * 10) / 10
-      return ok({ avg, count: data.count })
+      return ok({ avg, count: data.count, variant })
     } catch (e) {
       return err(500, 'Read failed', { reason: String(e) })
     }
   }
 
-  // ---- WRITE or READ via POST (JSON body) ----
+  // POST: read (no score) or write (with score)
   if (event.httpMethod === 'POST') {
     let body = {}
     try { body = JSON.parse(event.body || '{}') } catch {}
     const degree = body?.degree
     const code   = body?.code
-    const raw    = body?.score ?? body?.vote // support both names
+    const raw    = body?.score ?? body?.vote
     const hasScore = raw !== undefined && raw !== null
     const score  = hasScore ? Number(raw) : undefined
 
@@ -74,18 +91,18 @@ export async function handler(event) {
 
     const key = `courses/${degree}/${code}.json`
 
-    // POST without score → treat as a READ (so UI can always POST)
+    // POST read
     if (!hasScore) {
       try {
         const data = await store.get(key, { type: 'json' }) || { sum: 0, count: 0 }
         const avg = data.count ? Math.round((data.sum / data.count) * 10) / 10 : null
-        return ok({ avg, count: data.count })
+        return ok({ avg, count: data.count, variant })
       } catch (e) {
         return err(500, 'Read failed', { reason: String(e) })
       }
     }
 
-    // WRITE path
+    // POST write
     if (Number.isNaN(score)) return err(400, 'Invalid score')
     const clamped = Math.max(0, Math.min(100, score))
 
@@ -93,11 +110,9 @@ export async function handler(event) {
       const current = (await store.get(key, { type: 'json' })) || { sum: 0, count: 0 }
       const next = { sum: current.sum + clamped, count: current.count + 1, updatedAt: Date.now() }
       await store.setJSON(key, next)
-
       const avg = Math.round((next.sum / next.count) * 10) / 10
-      return ok({ ok: true, avg, count: next.count })
+      return ok({ ok: true, avg, count: next.count, variant })
     } catch (e) {
-      // surface exact API error so we know if it's 401/403/etc
       return err(500, 'Write failed', { reason: String(e) })
     }
   }
