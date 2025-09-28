@@ -1,6 +1,8 @@
-]// netlify/functions/votes.js
+// netlify/functions/votes.js
+
 import { getStore } from '@netlify/blobs'
 
+// ---- helpers ---------------------------------------------------------------
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,OPTIONS',
@@ -8,27 +10,30 @@ const CORS = {
   'content-type': 'application/json'
 }
 const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(data) })
-const err = (code, msg, extra = {}) => ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
+const err = (code, msg, extra = {}) =>
+  ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
 
 function makeStore(name) {
-  try {
-    // Try auto-configured store
-    return getStore(name)
-  } catch (e1) {
-    // Fallback: manual config
+  // 1) try auto-wired Blobs
+  try { return getStore(name) }
+  catch {
+    // 2) fallback to manual config via env vars
     const siteID = process.env.NETLIFY_SITE_ID
     const token  = process.env.NETLIFY_API_TOKEN
     if (!siteID || !token) {
-      throw new Error(`Blobs not configured: missing ${!siteID ? 'NETLIFY_SITE_ID ' : ''}${!token ? 'NETLIFY_API_TOKEN' : ''}`)
+      throw new Error(
+        `Blobs not configured: missing ${!siteID ? 'NETLIFY_SITE_ID ' : ''}${!token ? 'NETLIFY_API_TOKEN' : ''}`
+      )
     }
     return getStore(name, { siteID, token })
   }
 }
 
+// ---- handler ---------------------------------------------------------------
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
-  // 🔍 Diagnostics endpoint
+  // diagnostics: /.netlify/functions/votes?diag=1
   if (event.queryStringParameters?.diag === '1') {
     return ok({
       has_SITE_ID: !!process.env.NETLIFY_SITE_ID,
@@ -38,11 +43,8 @@ export async function handler(event) {
   }
 
   let votesStore
-  try {
-    votesStore = makeStore('votes')
-  } catch (e) {
-    return err(500, 'Netlify Blobs unavailable', { reason: String(e) })
-  }
+  try { votesStore = makeStore('votes') }
+  catch (e) { return err(500, 'Netlify Blobs unavailable', { reason: String(e) }) }
 
   if (event.httpMethod === 'GET') {
     const degree = event.queryStringParameters?.degree
