@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useMemo, useState, useEffect } from 'react'
 import Gauge from './components/Gauge.jsx'
 import DisclaimerModal from './components/DisclaimerModal.jsx'
@@ -35,6 +36,7 @@ export default function App(){
   const [loading, setLoading] = useState(false)
   const [vote, setVote] = useState(50)
   const [msg, setMsg] = useState(null)
+  const [cooldown, setCooldown] = useState(0) // seconds remaining until next allowed update
 
   const degreeList = useMemo(() => (degree ? (DEGREES[degree] || []) : []), [degree])
   const prefixes = useMemo(() => (degree ? prefixesForDegree(degree) : []), [degree])
@@ -76,6 +78,16 @@ export default function App(){
     return () => { ignore = true }
   }, [degree, selected])
 
+  // cooldown ticker
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const id = setInterval(() => setCooldown(s => (s > 1 ? s - 1 : 0)), 1000)
+    return () => clearInterval(id)
+  }, [cooldown])
+
+  // clear UI hints when switching course
+  useEffect(() => { setCooldown(0); setMsg(null) }, [selected?.code])
+
   // Disclaimer actions (no persistence so it shows every new visit)
   function accept() {
     setAccepted(true)
@@ -97,7 +109,9 @@ export default function App(){
 
   async function submitVote() {
     if (!selected?.code) return
+    if (cooldown > 0) return // client-side throttle (server also enforces)
     const wasVoted = alreadyVoted // capture before we potentially set it
+
     setLoading(true); setMsg(null)
     try {
       const res = await fetch(FN_URL, {
@@ -111,14 +125,27 @@ export default function App(){
         })
       })
       const data = await res.json().catch(() => ({}))
+
       if (!res.ok) {
-        setMsg(data?.error || 'Vote failed.')
-      } else {
-        setAvg(data.avg)
-        setCount(data.count)
-        if (votedKey) localStorage.setItem(votedKey, String(Date.now()))
-        setMsg(wasVoted ? 'Updated your vote!' : 'Thanks for voting!')
+        if (res.status === 429 && Number(data?.retry_after_s)) {
+          // server returned safe avg/count; keep UI in sync
+          if (typeof data.avg !== 'undefined') setAvg(data.avg)
+          if (typeof data.count !== 'undefined') setCount(data.count)
+          setCooldown(Number(data.retry_after_s))
+          setMsg(`Too fast — try again in ${Number(data.retry_after_s)}s.`)
+        } else {
+          setMsg(data?.error || 'Vote failed.')
+        }
+        return
       }
+
+      setAvg(data.avg)
+      setCount(data.count)
+      if (votedKey) localStorage.setItem(votedKey, String(Date.now()))
+      setMsg(wasVoted ? 'Updated your vote!' : 'Thanks for voting!')
+
+      // optional: apply server-advertised cooldown locally
+      if (Number(data?.cooldown_s)) setCooldown(Number(data.cooldown_s))
     } catch {
       setMsg('Vote failed.')
     } finally {
@@ -207,12 +234,14 @@ export default function App(){
                       onChange={e => setVote(Number(e.target.value))}
                     />
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="btn" onClick={submitVote} disabled={loading}>
-                        {alreadyVoted ? 'Update vote' : 'Submit vote'}
+                      <button className="btn" onClick={submitVote} disabled={loading || cooldown > 0}>
+                        {cooldown > 0 ? `Wait ${cooldown}s` : (alreadyVoted ? 'Update vote' : 'Submit vote')}
                       </button>
-                      <button className="btn secondary" onClick={() => setVote(50)} disabled={loading}>Reset</button>
+                      <button className="btn secondary" onClick={() => setVote(50)} disabled={loading}>
+                        Reset
+                      </button>
                     </div>
-                    <small className="muted">One vote per course per device (updates allowed).</small>
+                    <small className="muted">One vote per course per device (updates allowed, throttled).</small>
                     {msg && <small style={{ color: '#c7f' }}>{msg}</small>}
                   </div>
                 </div>
