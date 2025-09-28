@@ -1,66 +1,34 @@
 // netlify/functions/votes.js
 import { getStore } from '@netlify/blobs'
 
-// ---------- helpers ----------
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,OPTIONS',
   'access-control-allow-headers': 'content-type',
-  'content-type': 'application/json',
+  'content-type': 'application/json'
 }
 const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(data) })
-const err = (code, msg, extra = {}) =>
-  ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
+const err = (code, msg, extra = {}) => ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
 
-function makeStore(name) {
-  const siteID = process.env.NETLIFY_SITE_ID
-  const token  = process.env.NETLIFY_API_TOKEN
-  const attempts = []
-
-  // 1) Auto-wired
-  try {
-    return getStore(name)
-  } catch (e1) {
-    attempts.push(`auto:${String(e1?.message || e1)}`)
-  }
-
-  // 2) siteID + token
-  try {
-    if (!siteID || !token) throw new Error('missing env NETLIFY_SITE_ID/NETLIFY_API_TOKEN')
-    return getStore(name, { siteID, token })
-  } catch (e2) {
-    attempts.push(`siteID:${String(e2?.message || e2)}`)
-  }
-
-  // 3) siteId (lowercase d) + token
-  try {
-    if (!siteID || !token) throw new Error('missing env NETLIFY_SITE_ID/NETLIFY_API_TOKEN')
-    return getStore(name, { siteId: siteID, token })
-  } catch (e3) {
-    attempts.push(`siteId:${String(e3?.message || e3)}`)
-  }
-
-  throw new Error(`Blobs init failed → ${attempts.join(' | ')}`)
-}
-
-// ---------- handler ----------
-export async function handler(event) {
+export async function handler (event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
-  // diagnostics: /.netlify/functions/votes?diag=1
+  // quick diag
   if (event.queryStringParameters?.diag === '1') {
     return ok({
-      has_SITE_ID: !!process.env.NETLIFY_SITE_ID,
-      has_API_TOKEN: !!process.env.NETLIFY_API_TOKEN,
-      blobs_enabled: process.env.NETLIFY_BLOBS_ENABLED || false
+      node: process.version,
+      blobs_pkg: 'auto',
+      // these two are auto-injected by Netlify when Blobs is available
+      has_NETLIFY_BLOBS_CONTEXT: !!process.env.NETLIFY_BLOBS_CONTEXT,
+      has_NETLIFY_BLOBS_URL: !!process.env.NETLIFY_BLOBS_URL
     })
   }
 
-  let votesStore
+  let store
   try {
-    votesStore = makeStore('votes')
+    store = getStore('votes') // auto-wired by Netlify
   } catch (e) {
-    return err(500, 'Netlify Blobs unavailable', { reason: String(e) })
+    return err(500, 'Blobs not available (getStore failed)', { reason: String(e) })
   }
 
   if (event.httpMethod === 'GET') {
@@ -70,12 +38,12 @@ export async function handler(event) {
 
     const key = `courses/${degree}/${code}.json`
     try {
-      const data = await votesStore.get(key, { type: 'json' })
+      const data = await store.get(key, { type: 'json' })
       if (!data) return ok({ avg: null, count: 0 })
       const avg = Math.round((data.sum / Math.max(1, data.count)) * 10) / 10
       return ok({ avg, count: data.count })
     } catch (e) {
-      return err(500, 'Failed to read vote data', { reason: String(e) })
+      return err(500, 'Read failed', { reason: String(e) })
     }
   }
 
@@ -86,20 +54,18 @@ export async function handler(event) {
     const code   = body?.code
     const raw    = body?.score ?? body?.vote
     const score  = Number(raw)
-
     if (!degree || !code || Number.isNaN(score)) return err(400, 'Invalid payload')
-    if (score < 0 || score > 100)               return err(400, 'Score must be 0–100')
+    if (score < 0 || score > 100) return err(400, 'Score must be 0–100')
 
     const key = `courses/${degree}/${code}.json`
     try {
-      const current = (await votesStore.get(key, { type: 'json' })) || { sum: 0, count: 0 }
+      const current = (await store.get(key, { type: 'json' })) || { sum: 0, count: 0 }
       const next = { sum: current.sum + score, count: current.count + 1, updatedAt: Date.now() }
-      await votesStore.setJSON(key, next)
-
+      await store.setJSON(key, next)
       const avg = Math.round((next.sum / next.count) * 10) / 10
       return ok({ ok: true, avg, count: next.count })
     } catch (e) {
-      return err(500, 'Failed to save vote', { reason: String(e) })
+      return err(500, 'Write failed', { reason: String(e) })
     }
   }
 
