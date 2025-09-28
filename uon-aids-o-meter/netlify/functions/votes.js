@@ -1,35 +1,49 @@
 // netlify/functions/votes.js
-
 import { getStore } from '@netlify/blobs'
 
-// ---- helpers ---------------------------------------------------------------
+// ---------- helpers ----------
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,OPTIONS',
   'access-control-allow-headers': 'content-type',
-  'content-type': 'application/json'
+  'content-type': 'application/json',
 }
 const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(data) })
 const err = (code, msg, extra = {}) =>
   ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
 
 function makeStore(name) {
-  // 1) try auto-wired Blobs
-  try { return getStore(name) }
-  catch {
-    // 2) fallback to manual config via env vars
-    const siteID = process.env.NETLIFY_SITE_ID
-    const token  = process.env.NETLIFY_API_TOKEN
-    if (!siteID || !token) {
-      throw new Error(
-        `Blobs not configured: missing ${!siteID ? 'NETLIFY_SITE_ID ' : ''}${!token ? 'NETLIFY_API_TOKEN' : ''}`
-      )
-    }
-    return getStore(name, { siteID, token })
+  const siteID = process.env.NETLIFY_SITE_ID
+  const token  = process.env.NETLIFY_API_TOKEN
+  const attempts = []
+
+  // 1) Auto-wired
+  try {
+    return getStore(name)
+  } catch (e1) {
+    attempts.push(`auto:${String(e1?.message || e1)}`)
   }
+
+  // 2) siteID + token
+  try {
+    if (!siteID || !token) throw new Error('missing env NETLIFY_SITE_ID/NETLIFY_API_TOKEN')
+    return getStore(name, { siteID, token })
+  } catch (e2) {
+    attempts.push(`siteID:${String(e2?.message || e2)}`)
+  }
+
+  // 3) siteId (lowercase d) + token
+  try {
+    if (!siteID || !token) throw new Error('missing env NETLIFY_SITE_ID/NETLIFY_API_TOKEN')
+    return getStore(name, { siteId: siteID, token })
+  } catch (e3) {
+    attempts.push(`siteId:${String(e3?.message || e3)}`)
+  }
+
+  throw new Error(`Blobs init failed → ${attempts.join(' | ')}`)
 }
 
-// ---- handler ---------------------------------------------------------------
+// ---------- handler ----------
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
@@ -43,8 +57,11 @@ export async function handler(event) {
   }
 
   let votesStore
-  try { votesStore = makeStore('votes') }
-  catch (e) { return err(500, 'Netlify Blobs unavailable', { reason: String(e) }) }
+  try {
+    votesStore = makeStore('votes')
+  } catch (e) {
+    return err(500, 'Netlify Blobs unavailable', { reason: String(e) })
+  }
 
   if (event.httpMethod === 'GET') {
     const degree = event.queryStringParameters?.degree
