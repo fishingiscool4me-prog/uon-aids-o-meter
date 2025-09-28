@@ -12,103 +12,70 @@ function corsHeaders () {
     'access-control-allow-headers': 'content-type'
   }
 }
-function res (data, statusCode = 200) {
-  return {
-    statusCode,
-    headers: corsHeaders(),
-    body: JSON.stringify(data)
-  }
-}
-function clientIpFromHeaders (headers) {
-  // Netlify provides x-nf-client-connection-ip; also fall back gracefully
+const ok = (data) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stringify(data) })
+const err = (statusCode, msg) => ({ statusCode, headers: corsHeaders(), body: JSON.stringify({ error: msg }) })
+
+function clientIpFromHeaders (headers = {}) {
   const h = {}
-  for (const [k, v] of Object.entries(headers || {})) h[k.toLowerCase()] = v
+  for (const [k, v] of Object.entries(headers)) h[k.toLowerCase()] = v
   let ip = h['x-nf-client-connection-ip'] || h['client-ip'] || h['x-forwarded-for'] || ''
   if (ip.includes(',')) ip = ip.split(',')[0].trim()
   return ip
 }
 
-export async function handler (event, context) {
-  // CORS preflight
-  if (event.httpMethod === 'OPTIONS') {
-    return res({ ok: true })
-  }
+export async function handler (event) {
+  if (event.httpMethod === 'OPTIONS') return ok({})
 
   if (event.httpMethod === 'GET') {
-    const degree = event.queryStringParameters?.degree
-    const code = event.queryStringParameters?.code
-    if (!degree || !code) return res({ error: 'Missing degree or code' }, 400)
+    const { degree, code } = event.queryStringParameters || {}
+    if (!degree || !code) return err(400, 'Missing degree or code')
 
     const key = `courses/${degree}/${code}.json`
     const data = await votesStore.get(key, { type: 'json' })
-    if (!data) return res({ avg: null, count: 0 })
+    if (!data) return ok({ avg: null, count: 0 })
+
     const avg = Math.round((data.sum / Math.max(1, data.count)) * 10) / 10
-    return res({ avg, count: data.count })
+    return ok({ avg, count: data.count })
   }
 
   if (event.httpMethod === 'POST') {
-    let body
-    try { body = JSON.parse(event.body || '{}') } catch { body = {} }
+    let body = {}
+    try { body = JSON.parse(event.body || '{}') } catch {}
     const degree = body?.degree
     const code = body?.code
     const score = Number(body?.score)
-    if (!degree || !code || Number.isNaN(score)) return res({ error: 'Invalid payload' }, 400)
-    if (score < 0 || score > 100) return res({ error: 'Score out of range' }, 400)
+    if (!degree || !code || Number.isNaN(score)) return err(400, 'Invalid payload')
+    if (score < 0 || score > 100) return err(400, 'Score out of range')
 
     // Soft anti-spam: hashed IP + 30-day window per course
-    const ip = clientIpFromHeaders(event.headers || {})
-    const salt = process.env.VOTE_SALT || 'dev-salt'
-    if (ip) {
-      const hash = crypto.createHash('sha256').update(`${ip}|${degree}|${code}|${salt}`).digest('hex')
-      const gkey = `guards/${degree}/${code}/${hash}.json`
-      const now = Date.now()
-      const windowMs = 30 * 24 * 3600 * 1000
-
-      const existing = await guardStore.getWithMetadata(gkey, { type: 'json' })
-      if (!existing?.value) {
-        try {
-          await guardStore.setJSON(gkey, { t: now }, { onlyIfNew: true, metadata: { t: now } })
-        } catch {}
-      } else {
-        const last = existing.value?.t || 0
-        if (now - last < windowMs) {
-          return res({ error: 'Duplicate vote detected. Try again later.' }, 429)
-        } else {
-          try {
-            await guardStore.setJSON(gkey, { t: now }, { onlyIfMatch: existing.etag, metadata: { t: now } })
-          } catch {}
+    try {
+      const ip = clientIpFromHeaders(event.headers)
+      const salt = process.env.VOTE_SALT || 'dev-salt'
+      if (ip) {
+        const hash = crypto.createHash('sha256').update(`${ip}|${degree}|${code}|${salt}`).digest('hex')
+        const gkey = `guards/${degree}/${code}/${hash}.json`
+        const now = Date.now()
+        const windowMs = 30 * 24 * 3600 * 1000
+        const existing = await guardStore.get(gkey, { type: 'json' })
+        if (existing?.t && (now - existing.t) < windowMs) {
+          return err(429, 'Duplicate vote detected. Try again later.')
         }
+        await guardStore.setJSON(gkey, { t: now })
       }
-    }
+    } catch { /* don’t block on guard errors */ }
 
-    // Update totals with optimistic concurrency
-    const key = `courses/${degree}/${code}.json`
-    let tries = 0
-    while (tries++ < 6) {
-      const current = await votesStore.getWithMetadata(key, { type: 'json' })
-      let next, opts
-      if (!current?.value) {
-        next = { sum: score, count: 1, updatedAt: Date.now() }
-        opts = { onlyIfNew: true, metadata: { updatedAt: next.updatedAt } }
-      } else {
-        next = {
-          sum: (current.value.sum || 0) + score,
-          count: (current.value.count || 0) + 1,
-          updatedAt: Date.now()
-        }
-        opts = { onlyIfMatch: current.etag, metadata: { updatedAt: next.updatedAt } }
-      }
-      try {
-        await votesStore.setJSON(key, next, opts)
-        const avg = Math.round((next.sum / next.count) * 10) / 10
-        return res({ ok: true, avg, count: next.count })
-      } catch (e) {
-        if (String(e?.message || '').includes('412')) continue
-        return res({ error: 'Failed to save vote.' }, 500)
-      }
+    // Simple, safe update (no ETag gymnastics)
+    try {
+      const key = `courses/${degree}/${code}.json`
+      const current = await votesStore.get(key, { type: 'json' }) || { sum: 0, count: 0 }
+      const next = { sum: current.sum + score, count: current.count + 1, updatedAt: Date.now() }
+      await votesStore.setJSON(key, next)
+      const avg = Math.round((next.sum / next.count) * 10) / 10
+      return ok({ ok: true, avg, count: next.count })
+    } catch (e) {
+      return err(500, 'Failed to save vote.')
     }
-    return res({ error: 'Busy. Please retry.' }, 503)
   }
 
-  return res({ error: 'Method not allowed' }, 405)
+  return err(405, 'Method not allowed')
 }
