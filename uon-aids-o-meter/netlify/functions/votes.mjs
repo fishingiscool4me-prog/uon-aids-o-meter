@@ -1,7 +1,7 @@
 // netlify/functions/votes.mjs
 import { getStore } from '@netlify/blobs'
 
-// --- CORS helpers ---
+// CORS + helpers
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,OPTIONS',
@@ -12,22 +12,19 @@ const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(da
 const err = (code, msg, extra = {}) =>
   ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
 
-// Always use manual mode (auto-wiring is off on your site)
+// ALWAYS manual mode (your site doesn't auto-wire Blobs)
 const siteID = process.env.NETLIFY_SITE_ID
 const token  = process.env.NETLIFY_API_TOKEN
 
 function getVotesStore() {
-  if (!siteID || !token) {
-    throw new Error('Missing NETLIFY_SITE_ID or NETLIFY_API_TOKEN')
-  }
+  if (!siteID || !token) throw new Error('Missing NETLIFY_SITE_ID or NETLIFY_API_TOKEN')
   return getStore('votes', { siteID, token })
 }
 
 export async function handler(event) {
-  // CORS preflight
   if (event.httpMethod === 'OPTIONS') return ok({})
 
-  // Diagnostics (quick sanity check)
+  // Diagnostics
   if (event.queryStringParameters?.diag === '1') {
     return ok({
       node: process.version,
@@ -69,7 +66,7 @@ export async function handler(event) {
     try { body = JSON.parse(event.body || '{}') } catch {}
     const degree = body?.degree
     const code   = body?.code
-    const raw    = body?.score ?? body?.vote
+    const raw    = body?.score ?? body?.vote // support both names
     const hasScore = raw !== undefined && raw !== null
     const score  = hasScore ? Number(raw) : undefined
 
@@ -77,7 +74,7 @@ export async function handler(event) {
 
     const key = `courses/${degree}/${code}.json`
 
-    // If no score provided, treat POST as a read
+    // POST without score → treat as a READ (so UI can always POST)
     if (!hasScore) {
       try {
         const data = await store.get(key, { type: 'json' }) || { sum: 0, count: 0 }
@@ -88,7 +85,7 @@ export async function handler(event) {
       }
     }
 
-    // Otherwise, write a vote
+    // WRITE path
     if (Number.isNaN(score)) return err(400, 'Invalid score')
     const clamped = Math.max(0, Math.min(100, score))
 
@@ -100,6 +97,7 @@ export async function handler(event) {
       const avg = Math.round((next.sum / next.count) * 10) / 10
       return ok({ ok: true, avg, count: next.count })
     } catch (e) {
+      // surface exact API error so we know if it's 401/403/etc
       return err(500, 'Write failed', { reason: String(e) })
     }
   }
