@@ -1,4 +1,4 @@
-// netlify/functions/votes.js
+]// netlify/functions/votes.js
 import { getStore } from '@netlify/blobs'
 
 const CORS = {
@@ -11,33 +11,36 @@ const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(da
 const err = (code, msg, extra = {}) => ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
 
 function makeStore(name) {
-  // Try auto-wired Blobs first
   try {
+    // Try auto-configured store
     return getStore(name)
   } catch (e1) {
-    // Fall back to manual config via env vars
+    // Fallback: manual config
     const siteID = process.env.NETLIFY_SITE_ID
     const token  = process.env.NETLIFY_API_TOKEN
     if (!siteID || !token) {
-      // Give a *useful* error back to the client instead of crashing
-      throw new Error(`Blobs not configured: missing ${!siteID ? 'NETLIFY_SITE_ID' : ''}${!siteID && !token ? ' and ' : ''}${!token ? 'NETLIFY_API_TOKEN' : ''}`)
+      throw new Error(`Blobs not configured: missing ${!siteID ? 'NETLIFY_SITE_ID ' : ''}${!token ? 'NETLIFY_API_TOKEN' : ''}`)
     }
-    try {
-      return getStore(name, { siteID, token })
-    } catch (e2) {
-      throw new Error(`Blobs manual config failed: ${e2?.message || e2}`)
-    }
+    return getStore(name, { siteID, token })
   }
 }
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
+  // 🔍 Diagnostics endpoint
+  if (event.queryStringParameters?.diag === '1') {
+    return ok({
+      has_SITE_ID: !!process.env.NETLIFY_SITE_ID,
+      has_API_TOKEN: !!process.env.NETLIFY_API_TOKEN,
+      blobs_enabled: process.env.NETLIFY_BLOBS_ENABLED || false
+    })
+  }
+
   let votesStore
   try {
     votesStore = makeStore('votes')
   } catch (e) {
-    // Return the exact reason to the browser so you can fix it quickly
     return err(500, 'Netlify Blobs unavailable', { reason: String(e) })
   }
 
@@ -64,14 +67,16 @@ export async function handler(event) {
     const code   = body?.code
     const raw    = body?.score ?? body?.vote
     const score  = Number(raw)
+
     if (!degree || !code || Number.isNaN(score)) return err(400, 'Invalid payload')
-    if (score < 0 || score > 100) return err(400, 'Score must be 0–100')
+    if (score < 0 || score > 100)               return err(400, 'Score must be 0–100')
 
     const key = `courses/${degree}/${code}.json`
     try {
       const current = (await votesStore.get(key, { type: 'json' })) || { sum: 0, count: 0 }
       const next = { sum: current.sum + score, count: current.count + 1, updatedAt: Date.now() }
       await votesStore.setJSON(key, next)
+
       const avg = Math.round((next.sum / next.count) * 10) / 10
       return ok({ ok: true, avg, count: next.count })
     } catch (e) {
