@@ -1,6 +1,8 @@
+// netlify/functions/votes.mjs
 import { getStore } from '@netlify/blobs'
 import crypto from 'node:crypto'
 
+/* ---------- helpers ---------- */
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,OPTIONS',
@@ -14,29 +16,44 @@ const err = (code, msg, extra = {}) =>
 const siteID = (process.env.NETLIFY_SITE_ID || '').trim()
 const token  = (process.env.NETLIFY_API_TOKEN || '').trim()
 
-function tryGetStoreAllWays() {
+function tryGetStoreAllWays () {
   if (!siteID || !token) throw new Error('Missing NETLIFY_SITE_ID or NETLIFY_API_TOKEN')
   const attempts = [
-    { label: "name+{siteID,token}", fn: () => getStore('votes', { siteID, token }) },
-    { label: "name+{siteId,token}", fn: () => getStore('votes', { siteId: siteID, token }) },
-    { label: "{name,siteID,token}", fn: () => getStore({ name: 'votes', siteID, token }) },
-    { label: "{name,siteId,token}", fn: () => getStore({ name: 'votes', siteId: siteID, token }) },
+    () => getStore('votes', { siteID, token }),
+    () => getStore('votes', { siteId: siteID, token }),
+    () => getStore({ name: 'votes', siteID, token }),
+    () => getStore({ name: 'votes', siteId: siteID, token })
   ]
-  const errors = []
-  for (const a of attempts) {
-    try { return { store: a.fn(), variant: a.label } }
-    catch (e) { errors.push(`${a.label}: ${String(e)}`) }
+  const errs = []
+  for (const fn of attempts) {
+    try { return fn() } catch (e) { errs.push(String(e)) }
   }
-  throw new Error(`Blobs init failed → ${errors.join(' | ')}`)
+  throw new Error(`Blobs init failed → ${errs.join(' | ')}`)
 }
 
-const getHeader = (headers, name) => headers?.[name] || headers?.[name.toLowerCase()] || null
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex').slice(0, 32)
+const getHeader = (headers, name) => headers?.[name] || headers?.[name.toLowerCase()] || null
 
-/** derive a stable voter key: prefer clientId from body, else IP+UA fingerprint */
+// Unified keys (by course code only)
+const codeKey   = (code) => `codes/${code}.json`
+const legacyKey = (degree, code) => `courses/${degree}/${code}.json`
+
+// Ensure we always have the shape we want
+function normalizeDoc(doc) {
+  // new format: { sum, count, votes: { voterKey: score }, updatedAt }
+  if (doc && typeof doc === 'object') {
+    const hasVotes = doc.votes && typeof doc.votes === 'object'
+    const sum = Number(doc.sum) || 0
+    const count = Number(doc.count) || 0
+    return hasVotes ? { sum, count, votes: doc.votes, updatedAt: doc.updatedAt || Date.now() }
+                    : { sum, count, votes: {}, updatedAt: Date.now() } // migrate aggregate-only
+  }
+  return { sum: 0, count: 0, votes: {}, updatedAt: Date.now() }
+}
+
+// build a stable voter key (prefer clientId from body; else IP+UA)
 function voterKeyFrom(event, body) {
-  const cid = body?.clientId
-  if (cid) return sha(cid)
+  if (body?.clientId) return sha(body.clientId)
   const ip = (getHeader(event.headers, 'x-nf-client-connection-ip')
            || (getHeader(event.headers, 'x-forwarded-for') || '').split(',')[0].trim()
            || getHeader(event.headers, 'client-ip')
@@ -45,107 +62,107 @@ function voterKeyFrom(event, body) {
   return sha(`${ip}|${ua}`)
 }
 
-// unified keys (by course code only)
-const keyByCode   = (code) => `codes/${code}.json`
-const voterDocKey = (code, voterKey) => `codes/${code}/voters/${voterKey}.json`
-
-// legacy (for migration from old degree-based storage)
-const legacyKey   = (degree, code) => `courses/${degree}/${code}.json`
-const mergeStats  = (a = { sum:0, count:0 }, b = { sum:0, count:0 }) =>
-  ({ sum: (a.sum||0) + (b.sum||0), count: (a.count||0) + (b.count||0) })
-
+/* ---------- handler ---------- */
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
+  // quick diag
   if (event.queryStringParameters?.diag === '1') {
     return ok({
-      node: process.version, mode: 'manual',
-      have_site_id: !!siteID, have_api_token: !!token,
-      method: event.httpMethod, qp: event.queryStringParameters || null
+      node: process.version,
+      have_site_id: !!siteID,
+      have_api_token: !!token,
+      method: event.httpMethod
     })
   }
 
-  let store, variant
-  try { ({ store, variant } = tryGetStoreAllWays()) }
+  let store
+  try { store = tryGetStoreAllWays() }
   catch (e) { return err(500, 'Netlify Blobs unavailable', { reason: String(e) }) }
 
-  // --- READ via GET (prefer code; degree only used for legacy merge) ---
+  // ---- GET: read by code (degree only used to migrate) ----
   if (event.httpMethod === 'GET') {
     const degree = event.queryStringParameters?.degree || null
     const code   = event.queryStringParameters?.code
     if (!code) return err(400, 'Missing params', { need: ['code'] })
 
-    const kCode = keyByCode(code)
-    const kLegacy = degree ? legacyKey(degree, code) : null
+    const k = codeKey(code)
     try {
-      const main   = (await store.get(kCode,   { type: 'json' })) || { sum:0, count:0 }
-      const legacy = kLegacy ? (await store.get(kLegacy, { type: 'json' })) || null : null
-      const combined = legacy ? mergeStats(main, legacy) : main
-      if (legacy) await store.setJSON(kCode, combined) // migrate once
-      const avg = combined.count ? Math.round((combined.sum / combined.count) * 10) / 10 : null
-      return ok({ avg, count: combined.count, variant })
+      let doc = normalizeDoc(await store.get(k, { type: 'json' }))
+      // opportunistic migrate from legacy degree key if provided
+      if (degree) {
+        const legacy = await store.get(legacyKey(degree, code), { type: 'json' })
+        if (legacy && typeof legacy === 'object') {
+          const l = normalizeDoc(legacy)
+          // merge sum/count only; we have no per-voter detail in legacy
+          doc = { ...doc, sum: doc.sum + l.sum, count: doc.count + l.count }
+          await store.setJSON(k, doc)
+        }
+      }
+      const avg = doc.count ? Math.round((doc.sum / doc.count) * 10) / 10 : null
+      return ok({ avg, count: doc.count })
     } catch (e) {
       return err(500, 'Read failed', { reason: String(e) })
     }
   }
 
-  // --- POST: read (no score) or write/update (with score) by code+voterKey ---
+  // ---- POST: read (no score) or write/update (score) ----
   if (event.httpMethod === 'POST') {
     let body = {}
     try { body = JSON.parse(event.body || '{}') } catch {}
-
-    const degree = body?.degree || null // ignored for storage, used only for legacy merge
+    const degree = body?.degree || null // legacy merge only
     const code   = body?.code
     const raw    = body?.score ?? body?.vote
     const hasScore = raw !== undefined && raw !== null
     const score  = hasScore ? Number(raw) : undefined
-
     if (!code) return err(400, 'Missing params', { need: ['code'] })
 
-    const kCode  = keyByCode(code)
-    const kLegacy = degree ? legacyKey(degree, code) : null
-
-    // POST read: return current aggregate
-    if (!hasScore) {
-      try {
-        const main   = (await store.get(kCode,   { type: 'json' })) || { sum:0, count:0 }
-        const legacy = kLegacy ? (await store.get(kLegacy, { type: 'json' })) || null : null
-        const combined = legacy ? mergeStats(main, legacy) : main
-        if (legacy) await store.setJSON(kCode, combined) // migrate once
-        const avg = combined.count ? Math.round((combined.sum / combined.count) * 10) / 10 : null
-        return ok({ avg, count: combined.count, variant })
-      } catch (e) {
-        return err(500, 'Read failed', { reason: String(e) })
-      }
-    }
-
-    // POST write/update: single vote per voter; update doesn't change count
-    if (Number.isNaN(score)) return err(400, 'Invalid score')
-    const clamped = Math.max(0, Math.min(100, score))
-    const vKey    = voterKeyFrom(event, body)
-    const kVoter  = voterDocKey(code, vKey)
+    const k = codeKey(code)
 
     try {
-      // merge any legacy into main before updating
-      const main   = (await store.get(kCode,   { type: 'json' })) || { sum:0, count:0 }
-      const legacy = kLegacy ? (await store.get(kLegacy, { type: 'json' })) || null : null
-      let base     = legacy ? mergeStats(main, legacy) : main
-      if (legacy) await store.setJSON(kCode, base) // migrate
+      // read the unified doc
+      let doc = normalizeDoc(await store.get(k, { type: 'json' }))
 
-      const prev = (await store.get(kVoter, { type: 'json' })) || null
-      let next
-      if (prev && typeof prev.score === 'number') {
-        const delta = clamped - prev.score
-        next = { sum: base.sum + delta, count: base.count, updatedAt: Date.now() }
-      } else {
-        next = { sum: base.sum + clamped, count: base.count + 1, updatedAt: Date.now() }
+      // one-time merge from legacy aggregate if degree provided
+      if (degree) {
+        const legacy = await store.get(legacyKey(degree, code), { type: 'json' })
+        if (legacy && typeof legacy === 'object') {
+          const l = normalizeDoc(legacy)
+          doc.sum += l.sum
+          doc.count += l.count
+          await store.setJSON(k, doc)
+        }
       }
 
-      await store.setJSON(kCode, next)
-      await store.setJSON(kVoter, { score: clamped, updatedAt: Date.now() })
+      // POST read
+      if (!hasScore) {
+        const avg = doc.count ? Math.round((doc.sum / doc.count) * 10) / 10 : null
+        return ok({ avg, count: doc.count })
+      }
 
-      const avg = Math.round((next.sum / next.count) * 10) / 10
-      return ok({ ok: true, avg, count: next.count, variant })
+      // POST write/update
+      if (Number.isNaN(score)) return err(400, 'Invalid score')
+      const newScore = Math.max(0, Math.min(100, score))
+      const voterKey = voterKeyFrom(event, body)
+
+      const prev = doc.votes[voterKey]
+      if (typeof prev === 'number') {
+        // update existing: adjust sum by delta, count unchanged
+        const delta = newScore - prev
+        doc.sum += delta
+        doc.votes[voterKey] = newScore
+      } else {
+        // new voter: add to sum, increment count
+        doc.sum += newScore
+        doc.count += 1
+        doc.votes[voterKey] = newScore
+      }
+
+      doc.updatedAt = Date.now()
+      await store.setJSON(k, doc)
+
+      const avg = Math.round((doc.sum / doc.count) * 10) / 10
+      return ok({ ok: true, avg, count: doc.count })
     } catch (e) {
       return err(500, 'Write failed', { reason: String(e) })
     }
