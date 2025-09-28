@@ -41,10 +41,11 @@ useEffect(() => {
     setLoading(true); setMsg(null)
 
     try{
+      // POST read (no score)
       const res = await fetch(FN_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ degree, code: selected.code }) // POST read
+        body: JSON.stringify({ degree, code: selected.code })
       })
       const data = await res.json()
       if(!ignore){
@@ -57,6 +58,10 @@ useEffect(() => {
       if(!ignore) setLoading(false)
     }
   }
+  fetchAvg()
+  return () => { ignore = true }
+}, [degree, selected])
+
   fetchAvg()
   return () => { ignore = true }
 }, [degree, selected])
