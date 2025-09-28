@@ -1,78 +1,58 @@
-// netlify/functions/votes.mjs
-import { getStore } from '@netlify/blobs'
+import { getStore } from "@netlify/blobs";
 
-const CORS = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET,POST,OPTIONS',
-  'access-control-allow-headers': 'content-type',
-  'content-type': 'application/json'
-}
-const ok  = (data) => ({ statusCode: 200, headers: CORS, body: JSON.stringify(data) })
-const err = (code, msg, extra = {}) =>
-  ({ statusCode: code, headers: CORS, body: JSON.stringify({ error: msg, ...extra }) })
-
-const siteID = process.env.NETLIFY_SITE_ID
-const token  = process.env.NETLIFY_API_TOKEN
-
-export async function handler(event) {
-  if (event.httpMethod === 'OPTIONS') return ok({})
-
-  // quick diag
-  if (event.queryStringParameters?.diag === '1') {
-    return ok({
-      node: process.version,
-      mode: 'manual',
-      have_site_id: !!siteID,
-      have_api_token: !!token
-    })
+export default async (req, context) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      },
+    });
   }
 
-  if (!siteID || !token) {
-    return err(500, 'Missing NETLIFY_SITE_ID or NETLIFY_API_TOKEN')
-  }
+  try {
+    const store = getStore("votes", {
+      siteID: process.env.NETLIFY_SITE_ID,
+      token: process.env.NETLIFY_API_TOKEN,
+    });
 
-  // ALWAYS manual
-  const store = getStore('votes', { siteID, token })
+    if (req.method === "POST") {
+      const { course, vote } = await req.json();
 
-  if (event.httpMethod === 'GET') {
-    const degree = event.queryStringParameters?.degree
-    const code   = event.queryStringParameters?.code
-    if (!degree || !code) return err(400, 'Missing degree or code')
+      const current = (await store.getJSON(course)) || { sum: 0, count: 0 };
 
-    const key = `courses/${degree}/${code}.json`
-    try {
-      const data = await store.get(key, { type: 'json' }) // null if not found
-      if (!data) return ok({ avg: null, count: 0 })
-      const avg = Math.round((data.sum / Math.max(1, data.count)) * 10) / 10
-      return ok({ avg, count: data.count })
-    } catch (e) {
-      return err(500, 'Read failed', { reason: String(e) })
+      const updated = {
+        sum: current.sum + vote,
+        count: current.count + 1,
+      };
+
+      await store.setJSON(course, updated);
+
+      return new Response(JSON.stringify({ success: true, data: updated }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
     }
+
+    return new Response(JSON.stringify({ error: "Invalid method" }), {
+      status: 405,
+      headers: { "Access-Control-Allow-Origin": "*" },
+    });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({
+        error: "Netlify Blobs unavailable",
+        reason: err.stack || err.message,
+      }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
   }
-
-  if (event.httpMethod === 'POST') {
-    let body = {}
-    try { body = JSON.parse(event.body || '{}') } catch {}
-    const degree = body?.degree
-    const code   = body?.code
-    const raw    = body?.score ?? body?.vote
-    const score  = Number(raw)
-
-    if (!degree || !code || Number.isNaN(score)) return err(400, 'Invalid payload')
-    if (score < 0 || score > 100)               return err(400, 'Score must be 0–100')
-
-    const key = `courses/${degree}/${code}.json`
-    try {
-      const current = (await store.get(key, { type: 'json' })) || { sum: 0, count: 0 }
-      const next = { sum: current.sum + score, count: current.count + 1, updatedAt: Date.now() }
-      await store.setJSON(key, next)
-
-      const avg = Math.round((next.sum / next.count) * 10) / 10
-      return ok({ ok: true, avg, count: next.count })
-    } catch (e) {
-      return err(500, 'Write failed', { reason: String(e) })
-    }
-  }
-
-  return err(405, 'Method not allowed')
-}
+};
