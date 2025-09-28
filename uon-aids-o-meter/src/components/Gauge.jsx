@@ -1,17 +1,17 @@
 import React from 'react'
 
-export default function Gauge({ value=0 }){
-  const pct = Math.max(0, Math.min(100, Number(value)||0))
+export default function Gauge({ value = 0 }) {
+  const pct = Math.max(0, Math.min(100, Number(value) || 0))
   let mood = '😍 Amazing'
   if (pct >= 20) mood = '🙂 Good'
-  if (pct >= 40) mood = '😐 Mid'
-  if (pct >= 60) mood = '😖 Rough'
-  if (pct >= 80) mood = '💀 Unforgiving'
+  if (pct >= 40) mood = '😐 Slightly Aids'
+  if (pct >= 60) mood = '😖 Aids'
+  if (pct >= 80) mood = '💀 Aids apocalypse'
 
   return (
-    <div className="meter card" style={{padding:16}}>
-      <div style={{display:'grid', gridTemplateColumns:'auto 1fr', gap:24, alignItems:'center'}}>
-        <div className="thermo" style={{'--pct': pct}}>
+    <div className="meter card" style={{ padding: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 24, alignItems: 'center' }}>
+        <div className="thermo" style={{ '--pct': pct }}>
           <div className="fill"></div>
           <div className="bulb"></div>
           <div className="scale">
@@ -22,15 +22,25 @@ export default function Gauge({ value=0 }){
             <span>0</span>
           </div>
         </div>
-        <div style={{display:'grid', gap:8}}>
+
+        {/* right column */}
+        <div style={{ display: 'grid', gap: 8 }}>
           <div className="kpi">
             <div className="big">{pct.toFixed(1)}</div>
-            <div className="tag">Aids‑O‑Score</div>
+            <div className="tag">Aids-O-Score</div>
           </div>
-          <small style={{color:'var(--muted)'}}>0 = easy bliss, 100 = pain incarnate.</small>
-          <div style={{fontSize:22}}>{mood}</div>
+
+          {/* clearer legend, no overlap */}
+          <div className="legend">
+            <div><b>Scale:</b></div>
+            <div>0 = easy bliss</div>
+            <div>100 = pain incarnate</div>
+          </div>
+
+          <div className="mood">{mood}</div>
         </div>
       </div>
     </div>
   )
 }
+
