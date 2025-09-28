@@ -70,7 +70,6 @@ function voterKeyFrom(event, body) {
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return ok({})
 
-  // quick diag
   if (event.queryStringParameters?.diag === '1') {
     return ok({
       node: process.version,
@@ -84,14 +83,20 @@ export async function handler(event) {
   try { store = tryGetStoreAllWays() }
   catch (e) { return err(500, 'Netlify Blobs unavailable', { reason: String(e) }) }
 
-  // ---- GET: strict read by code (NO mutation, NO legacy merge) ----
+  // ---- GET: read (with auto-initialize) ----
   if (event.httpMethod === 'GET') {
     const code = event.queryStringParameters?.code
     if (!code) return err(400, 'Missing params', { need: ['code'] })
 
     const k = codeKey(code)
     try {
-      const doc = normalizeDoc(await store.get(k, { type: 'json' }))
+      let doc = await store.get(k, { type: 'json' })
+      if (!doc) {
+        doc = normalizeDoc(null)
+        await store.setJSON(k, doc) // auto-initialize
+      } else {
+        doc = normalizeDoc(doc)
+      }
       const avg = doc.count ? Math.round((doc.sum / doc.count) * 10) / 10 : null
       return ok({ avg, count: doc.count })
     } catch (e) {
@@ -99,11 +104,11 @@ export async function handler(event) {
     }
   }
 
-  // ---- POST: read (no score) or write/update (score) ----
+  // ---- POST: read or write ----
   if (event.httpMethod === 'POST') {
     let body = {}
     try { body = JSON.parse(event.body || '{}') } catch {}
-    const degree = body?.degree || null // optional; if present we do ONE-TIME legacy merge
+    const degree = body?.degree || null
     const code   = body?.code
     const raw    = body?.score ?? body?.vote
     const hasScore = raw !== undefined && raw !== null
@@ -113,10 +118,15 @@ export async function handler(event) {
     const k = codeKey(code)
 
     try {
-      // read the unified doc
-      let doc = normalizeDoc(await store.get(k, { type: 'json' }))
+      let doc = await store.get(k, { type: 'json' })
+      if (!doc) {
+        doc = normalizeDoc(null)
+        await store.setJSON(k, doc) // auto-initialize
+      } else {
+        doc = normalizeDoc(doc)
+      }
 
-      // ONE-TIME merge from legacy aggregate if (a) caller provided degree AND (b) not merged yet
+      // legacy merge only once
       if (degree && !doc.migrated) {
         const legacy = await store.get(legacyKey(degree, code), { type: 'json' })
         if (legacy && typeof legacy === 'object') {
@@ -128,25 +138,21 @@ export async function handler(event) {
         await store.setJSON(k, doc)
       }
 
-      // POST read (no score provided)
       if (!hasScore) {
         const avg = doc.count ? Math.round((doc.sum / doc.count) * 10) / 10 : null
         return ok({ avg, count: doc.count })
       }
 
-      // POST write/update
       if (Number.isNaN(score)) return err(400, 'Invalid score')
       const newScore = Math.max(0, Math.min(100, score))
       const voterKey = voterKeyFrom(event, body)
 
       const prev = doc.votes[voterKey]
       if (typeof prev === 'number') {
-        // update existing: adjust sum by delta, count unchanged
         const delta = newScore - prev
         doc.sum += delta
         doc.votes[voterKey] = newScore
       } else {
-        // new voter: add to sum, increment count
         doc.sum += newScore
         doc.count += 1
         doc.votes[voterKey] = newScore
