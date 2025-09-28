@@ -37,10 +37,13 @@ export default function App(){
   useEffect(() => {
     let ignore = false
     async function fetchAvg(){
-      if(!degree || !selected) return
+      if(!degree || !selected?.code) return   // ✅ safer guard
       setLoading(true); setMsg(null)
+
+      console.log("Fetching avg with:", degree, selected.code) // ✅ debug log
+
       try{
-        const params = new URLSearchParams({degree, code: selected.code})
+        const params = new URLSearchParams({ degree, code: selected.code })
         const res = await fetch(`${FN_URL}?${params.toString()}`)
         const data = await res.json()
         if(!ignore){
@@ -67,12 +70,15 @@ export default function App(){
     document.body.innerHTML = '<div style="display:grid;place-items:center;height:100vh;color:white;font-family:Inter,sans-serif;"><div class="card" style="padding:24px;border-radius:14px;text-align:center;background:#0e1530;border:1px solid rgba(255,255,255,0.12)"><h2>Access declined</h2><p>Totally fair. You can close this tab any time.</p></div></div>'
   }
 
-  const votedKey = useMemo(() => (degree && selected) ? `voted:${degree}:${selected.code}` : null, [degree, selected])
+  const votedKey = useMemo(() => (degree && selected?.code) ? `voted:${degree}:${selected.code}` : null, [degree, selected])
   const alreadyVoted = votedKey ? !!localStorage.getItem(votedKey) : false
 
   async function submitVote(){
-    if(!degree || !selected) return
+    if(!degree || !selected?.code) return   // ✅ guard
     setLoading(true); setMsg(null)
+
+    console.log("Submitting vote:", { degree, code: selected.code, score: vote }) // ✅ debug log
+
     try{
       const res = await fetch(FN_URL, {
         method: 'POST',
@@ -100,7 +106,7 @@ export default function App(){
       <DisclaimerModal open={!accepted} onAccept={accept} onDecline={decline} />
       <div className="header">
         <div className="logo">🔥</div>
-        <div className="h1">UON Aids‑O‑Meter</div>
+        <div className="h1">UON Aids-O-Meter</div>
       </div>
 
       <div className="row">
@@ -151,7 +157,7 @@ export default function App(){
 
         <div className="right">
           <div className="panel card">
-            <h3 style={{marginTop:0}}>Aids‑O‑Meter</h3>
+            <h3 style={{marginTop:0}}>Aids-O-Meter</h3>
             {!selected && <p>Pick a course to see the fun little meter. 🎯</p>}
             {selected && (
               <>
@@ -174,7 +180,7 @@ export default function App(){
                       <button className="btn" onClick={submitVote} disabled={loading}>{alreadyVoted ? "Update vote" : "Submit vote"}</button>
                       <button className="btn secondary" onClick={() => setVote(50)} disabled={loading}>Reset</button>
                     </div>
-                    <small className="muted">Anti‑spam: one vote per course per device + IP window.</small>
+                    <small className="muted">Anti-spam: one vote per course per device + IP window.</small>
                     {msg && <small style={{color:'#c7f'}}>{msg}</small>}
                   </div>
                 </div>
@@ -187,7 +193,7 @@ export default function App(){
             <p>
               Built with React + Netlify Functions. Data is anonymous and stored as totals only (sum + count).
             </p>
-            <p><small>Open‑source on GitHub.</small></p>
+            <p><small>Open-source on GitHub.</small></p>
           </div>
         </div>
       </div>
