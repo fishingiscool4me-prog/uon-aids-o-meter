@@ -33,32 +33,34 @@ export default function App(){
     return degreeList.filter(c => c.code.startsWith(prefix))
   }, [degree, prefix, degreeList])
 
-  // fetch current avg when selection changes
-  useEffect(() => {
-    let ignore = false
-    async function fetchAvg(){
-      if(!degree || !selected?.code) return   // ✅ safer guard
-      setLoading(true); setMsg(null)
+// fetch current avg when selection changes
+useEffect(() => {
+  let ignore = false
+  async function fetchAvg(){
+    if(!degree || !selected?.code) return
+    setLoading(true); setMsg(null)
 
-      console.log("Fetching avg with:", degree, selected.code) // ✅ debug log
-
-      try{
-        const params = new URLSearchParams({ degree, code: selected.code })
-        const res = await fetch(`${FN_URL}?${params.toString()}`)
-        const data = await res.json()
-        if(!ignore){
-          setAvg(data.avg)
-          setCount(data.count || 0)
-        }
-      }catch(e){
-        if(!ignore) setMsg('Could not load score.')
-      }finally{
-        if(!ignore) setLoading(false)
+    try{
+      const res = await fetch(FN_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ degree, code: selected.code }) // POST read
+      })
+      const data = await res.json()
+      if(!ignore){
+        setAvg(data.avg)
+        setCount(data.count || 0)
       }
+    }catch(e){
+      if(!ignore) setMsg('Could not load score.')
+    }finally{
+      if(!ignore) setLoading(false)
     }
-    fetchAvg()
-    return () => { ignore = true }
-  }, [degree, selected])
+  }
+  fetchAvg()
+  return () => { ignore = true }
+}, [degree, selected])
+
 
   function accept(){
     localStorage.setItem('terms:v1','ok')
