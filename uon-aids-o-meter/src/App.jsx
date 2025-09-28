@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useMemo, useState, useEffect } from 'react'
+import React, { useMemo, useState, useEffect, useRef } from 'react'
 import Gauge from './components/Gauge.jsx'
 import DisclaimerModal from './components/DisclaimerModal.jsx'
 import { DEGREES, prefixesForDegree } from './data/degrees.js'
@@ -36,7 +36,26 @@ export default function App(){
   const [loading, setLoading] = useState(false)
   const [vote, setVote] = useState(50)
   const [msg, setMsg] = useState(null)
-  const [cooldown, setCooldown] = useState(0) // seconds remaining until next allowed update
+
+  const [cooldown, setCooldown] = useState(0)          // seconds remaining until next allowed update
+  const [serverCooldown, setServerCooldown] = useState(60) // discovered from server (fallback 60s)
+  const inFlight = useRef(false)                       // instant, synchronous click lock
+
+  // Discover server-configured cooldown once (optional, improves label accuracy)
+  useEffect(() => {
+    let ignore = false
+    ;(async () => {
+      try {
+        const r = await fetch(`${FN_URL}?diag=1`)
+        const d = await r.json().catch(() => ({}))
+        if (!ignore) {
+          const s = Number(d?.cooldown_s)
+          if (Number.isFinite(s) && s >= 0) setServerCooldown(s)
+        }
+      } catch {}
+    })()
+    return () => { ignore = true }
+  }, [])
 
   const degreeList = useMemo(() => (degree ? (DEGREES[degree] || []) : []), [degree])
   const prefixes = useMemo(() => (degree ? prefixesForDegree(degree) : []), [degree])
@@ -109,8 +128,10 @@ export default function App(){
 
   async function submitVote() {
     if (!selected?.code) return
-    if (cooldown > 0) return // client-side throttle (server also enforces)
-    const wasVoted = alreadyVoted // capture before we potentially set it
+    if (cooldown > 0) return          // client-side throttle (server also enforces)
+    if (inFlight.current) return       // instant lock against double-click burst
+    inFlight.current = true            // lock immediately (synchronous)
+    const wasVoted = alreadyVoted
 
     setLoading(true); setMsg(null)
     try {
@@ -144,12 +165,14 @@ export default function App(){
       if (votedKey) localStorage.setItem(votedKey, String(Date.now()))
       setMsg(wasVoted ? 'Updated your vote!' : 'Thanks for voting!')
 
-      // optional: apply server-advertised cooldown locally
-      if (Number(data?.cooldown_s)) setCooldown(Number(data.cooldown_s))
+      // start cooldown immediately after a successful vote
+      const s = Number(data?.cooldown_s)
+      setCooldown(Number.isFinite(s) && s >= 0 ? s : serverCooldown)
     } catch {
       setMsg('Vote failed.')
     } finally {
       setLoading(false)
+      inFlight.current = false        // release lock after response
     }
   }
 
@@ -234,14 +257,20 @@ export default function App(){
                       onChange={e => setVote(Number(e.target.value))}
                     />
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="btn" onClick={submitVote} disabled={loading || cooldown > 0}>
+                      <button
+                        className="btn"
+                        onClick={submitVote}
+                        disabled={loading || cooldown > 0}
+                      >
                         {cooldown > 0 ? `Wait ${cooldown}s` : (alreadyVoted ? 'Update vote' : 'Submit vote')}
                       </button>
                       <button className="btn secondary" onClick={() => setVote(50)} disabled={loading}>
                         Reset
                       </button>
                     </div>
-                    <small className="muted">One vote per course per device (updates allowed, throttled).</small>
+                    <small className="muted">
+                      One vote per course per device (updates allowed, throttled).
+                    </small>
                     {msg && <small style={{ color: '#c7f' }}>{msg}</small>}
                   </div>
                 </div>
