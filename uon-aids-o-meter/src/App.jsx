@@ -186,9 +186,8 @@ export default function App(){
             <h3 style={{marginTop:0}}>About</h3>
             <p>
               Built with React + Netlify Functions. Data is anonymous and stored as totals only (sum + count).
-              Add more degrees by editing <code>src/data/degrees.js</code>.
             </p>
-            <p><small>Open‑source on your GitHub. Please be nice, don&apos;t be defamatory. 💚</small></p>
+            <p><small>Open‑source on GitHub.</small></p>
           </div>
         </div>
       </div>
